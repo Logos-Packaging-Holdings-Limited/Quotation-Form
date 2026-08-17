@@ -362,6 +362,8 @@
       <div class="form-group"><label>Email <span class="req">*</span></label><input type="email" name="email" required placeholder="name@company.com"></div>
       <div class="form-group"><label>Person in charge <span class="req">*</span></label><input type="text" name="person_in_charge" required placeholder="Name of decision maker"></div>
       <div class="form-group"><label>Project number</label><input type="text" name="project_number" placeholder="Optional"></div>
+      <!-- Honeypot -->
+      <input type="text" name="_gotcha" style="display:none" tabindex="-1" autocomplete="off">
       <div class="btn-group">
         <button type="button" class="btn btn-primary" onclick="goToStep(2)">Continue →</button>
       </div>
@@ -864,10 +866,14 @@ function buildReview() {
   container.innerHTML = html || '<p style="color:#718096;">No data entered yet.</p>';
 }
 
+// ============================================================
+// DATA GATHERING — filters empties, adds Formspree metadata
+// ============================================================
 function gatherAllData() {
   const data = {};
   document.querySelectorAll('input, textarea, select').forEach(el => {
-    if (!el.name) return;
+    if (!el.name || el.name === '_gotcha') return;
+
     if (el.type === 'checkbox') {
       if (el.checked) {
         if (!data[el.name]) data[el.name] = [];
@@ -876,9 +882,15 @@ function gatherAllData() {
     } else if (el.type === 'radio') {
       if (el.checked) data[el.name] = el.value;
     } else {
-      data[el.name] = el.value;
+      const val = el.value.trim();
+      if (val) data[el.name] = val;   // skip empties
     }
   });
+
+  // Formspree metadata
+  if (data.email) data._replyto = data.email;
+  data._subject = `Packaging Requirements — ${data.company || 'New Submission'}`;
+
   return data;
 }
 
@@ -888,6 +900,7 @@ function gatherAllData() {
 async function submitForm() {
   if (!validateStep(7)) return;
   saveStepData(7);
+
   const data = gatherAllData();
   data.submitted_at = new Date().toISOString();
 
@@ -908,15 +921,21 @@ async function submitForm() {
       },
       body: JSON.stringify(data)
     });
+
+    let result = {};
+    try { result = await response.json(); } catch (e) { /* non-JSON response */ }
+
     if (response.ok) {
       emailSent = true;
     } else {
-      const err = await response.json();
-      errorMsg = err.error || 'Server error';
+      errorMsg = result.error || `Server error (${response.status})`;
+      if (result.errors && Array.isArray(result.errors)) {
+        errorMsg = result.errors.map(e => e.message || e.code).join('; ');
+      }
     }
   } catch (err) {
     console.error('Formspree error:', err);
-    errorMsg = 'Network error. Please check your connection.';
+    errorMsg = 'Network error. Please check your connection and try again.';
   }
 
   // Show success screen
@@ -972,7 +991,7 @@ function niceLabel(key) {
     product_type: 'Product type'
   };
   if (map[key]) return map[key];
-  return key.replace(/_/g, ' ').replace(/^dieline /, '').replace(/^feat /, '').replace(/^prod /, '').replace(/^test /, '').replace(/^retort /, '').replace(/^spout /, '').replace(/\b\w/g, l => l.toUpperCase());
+  return key.replace(/_/g, ' ').replace(/^dieline /, '').replace(/^feat /, '').replace(/^prod /, '').replace(/^test /, '').replace(/^retort /, '').replace(/^spout /, '').replace(/\w/g, l => l.toUpperCase());
 }
 
 init();
