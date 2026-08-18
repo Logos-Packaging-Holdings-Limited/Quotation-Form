@@ -6,6 +6,7 @@
 <title>Logos Packaging Holdings Limited — Customer Requirements</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   :root {
     --primary: #1a3a5c;
@@ -451,6 +452,7 @@
         <div class="btn-group" style="justify-content:center;flex-wrap:wrap;">
           <button type="button" class="btn btn-primary" onclick="copyToClipboard()">📋 Copy Response JSON</button>
           <button type="button" class="btn btn-accent" onclick="generateAndDownloadPDF()">📄 Download PDF</button>
+          <button type="button" class="btn btn-accent" onclick="generateAndDownloadDOCX()">📝 Download Word</button>
           <button type="button" class="btn btn-secondary" onclick="window.print()">🖨️ Print / Save PDF</button>
           <button type="button" class="btn btn-secondary" onclick="location.reload()">Start New Form</button>
         </div>
@@ -469,7 +471,7 @@
 // FORMSPREE CONFIG — ACTIVE
 // ============================================================
 const CONFIG = {
-  formEndpoint: 'https://formspree.io/f/mppayplb',
+  formEndpoint: 'https://formspree.io/f/xjybayby',
   emailTo: 'cy.yu@logospack.com.hk'
 };
 
@@ -1002,6 +1004,240 @@ function generateAndDownloadPDF() {
   const fileName = `Logos_Packaging_Requirements_${(data.company || 'Client').replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.pdf`;
   doc.save(fileName);
   showToast('PDF downloaded successfully!', false);
+}
+
+// ============================================================
+// WORD GENERATOR — JSZip + raw OOXML, no external docx lib
+// ============================================================
+async function generateAndDownloadDOCX() {
+  const data = lastSubmittedData;
+  if (!data || !data.company) {
+    showToast('No submission data found. Please submit the form first.', true);
+    return;
+  }
+
+  // ── XML helpers ───────────────────────────────────────────
+  function esc(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // Heading paragraph — navy background, white bold text
+  function heading(text) {
+    return `<w:p>
+      <w:pPr><w:spacing w:before="200" w:after="100"/>
+        <w:shd w:val="clear" w:color="auto" w:fill="1A3A5C"/>
+        <w:ind w:left="120"/>
+      </w:pPr>
+      <w:r><w:rPr><w:b/><w:color w:val="FFFFFF"/><w:sz w:val="22"/><w:szCs w:val="22"/></w:rPr>
+        <w:t>${esc(text)}</w:t>
+      </w:r>
+    </w:p>`;
+  }
+
+  // Two-column table row: bold navy label | value
+  function row(label, value) {
+    const v = (value !== undefined && value !== null && String(value).trim() !== '')
+      ? esc(String(value).trim()) : '/';
+    return `
+      <w:tr>
+        <w:tc>
+          <w:tcPr>
+            <w:tcW w:w="3200" w:type="dxa"/>
+            <w:shd w:val="clear" w:color="auto" w:fill="F5F7FA"/>
+            <w:tcMar><w:top w:w="80" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:right w:w="60" w:type="dxa"/></w:tcMar>
+          </w:tcPr>
+          <w:p><w:r><w:rPr><w:b/><w:color w:val="1A3A5C"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><w:t>${esc(label)}</w:t></w:r></w:p>
+        </w:tc>
+        <w:tc>
+          <w:tcPr>
+            <w:tcW w:w="5400" w:type="dxa"/>
+            <w:tcMar><w:top w:w="80" w:type="dxa"/><w:left w:w="120" w:type="dxa"/><w:bottom w:w="80" w:type="dxa"/><w:right w:w="120" w:type="dxa"/></w:tcMar>
+          </w:tcPr>
+          <w:p><w:r><w:rPr><w:color w:val="2D3748"/><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><w:t xml:space="preserve">${v}</w:t></w:r></w:p>
+        </w:tc>
+      </w:tr>`;
+  }
+
+  function table(rows) {
+    return `<w:tbl>
+      <w:tblPr>
+        <w:tblW w:w="8600" w:type="dxa"/>
+        <w:tblBorders>
+          <w:top w:val="single" w:sz="4" w:color="E2E8F0"/>
+          <w:left w:val="single" w:sz="4" w:color="E2E8F0"/>
+          <w:bottom w:val="single" w:sz="4" w:color="E2E8F0"/>
+          <w:right w:val="single" w:sz="4" w:color="E2E8F0"/>
+          <w:insideH w:val="single" w:sz="4" w:color="E2E8F0"/>
+          <w:insideV w:val="single" w:sz="4" w:color="E2E8F0"/>
+        </w:tblBorders>
+        <w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar>
+      </w:tblPr>
+      ${rows}
+    </w:tbl>
+    <w:p><w:pPr><w:spacing w:after="120"/></w:pPr></w:p>`;
+  }
+
+  // ── collect sections same as PDF ──────────────────────────
+  const fmt     = data.packaging_format;
+  const fmtName = FORMATS.find(f => f.key === fmt)?.name || fmt;
+  const ptName  = PRODUCT_TYPES.find(p => p.key === data.product_type)?.label || data.product_type;
+
+  // Die-line
+  const dieFields = DIE_LINES[fmt] || [];
+  const dieTableRows = dieFields.map(q => {
+    const el = document.querySelector(`[name="dieline_${slug(q)}"]`);
+    return row(q, el ? el.value.trim() : '');
+  }).join('');
+
+  // Features
+  let featTableRows = '';
+  document.querySelectorAll('#step4 input, #step4 textarea, #step4 select').forEach(el => {
+    if (!el.name) return;
+    if ((el.name.startsWith('feat_') || el.name.startsWith('spout_')) && !el.closest('.conditional.hidden')) {
+      featTableRows += row(niceLabel(el.name), el.value.trim());
+    }
+  });
+
+  // Product-specific questions
+  const pq = PRODUCT_QUESTIONS[data.product_type] || [];
+  const prodSpecTableRows = pq.map(q => {
+    const el = document.querySelector(`[name="prod_${slug(q)}"]`);
+    return row(q, el ? el.value.trim() : '');
+  }).join('');
+
+  // Production info
+  let prodInfoRows = [
+    row('Filling-machine brand', data.prod_machine),
+    row('Filling method', data.prod_fill_method),
+    row('Product filling temperature (°C)', data.prod_fill_temp),
+    row('Heat-seal temperature (°C)', data.prod_seal_temp),
+    row('Sterilization method', data.prod_steril === 'retort' ? 'Retort' : data.prod_steril),
+  ];
+  if (data.prod_steril === 'retort') {
+    prodInfoRows.push(row('Max retort temperature (°C)', data.retort_max_temp));
+    prodInfoRows.push(row('Holding time (minutes)', data.retort_hold));
+    prodInfoRows.push(row('Total retort-cycle duration (min)', data.retort_duration));
+    prodInfoRows.push(row('Requirements before/after retort', data.retort_requirements));
+  }
+
+  // Tests
+  const testList = Array.isArray(data.tests) ? data.tests : (data.tests ? [data.tests] : []);
+  let testRows = '';
+  if (testList.length > 0 && !testList.includes('none')) {
+    TESTS.forEach(t => {
+      if (!testList.includes(t.key)) return;
+      testRows += row('Test type', t.label);
+      t.fields.forEach(f => { testRows += row('  › ' + f, data['test_' + t.key + '_' + slug(f)]); });
+      if (t.extra) testRows += row('  › ' + t.extra, data['test_' + t.key + '_extra']);
+    });
+  } else {
+    testRows = row('Status', 'No testing required');
+  }
+
+  // ── build document XML ────────────────────────────────────
+  const featSectionTitle = fmt === 'rollFilm' ? 'Section 3b: Roll-Film Features'
+    : fmt === 'spoutPouch' ? 'Section 3b: Spout Details & Features'
+    : 'Section 3b: Format-Specific Features';
+
+  const body = `
+    ${heading('LOGOS PACKAGING HOLDINGS LIMITED — Customer Requirements')}
+    <w:p><w:pPr><w:spacing w:after="80"/></w:pPr>
+      <w:r><w:rPr><w:b/><w:color w:val="1A3A5C"/><w:sz w:val="20"/></w:rPr><w:t>www.logospack.com.hk</w:t></w:r>
+      <w:r><w:rPr><w:color w:val="718096"/><w:sz w:val="18"/></w:rPr><w:t xml:space="preserve">   |   Submitted: ${esc(data.submitted_at ? new Date(data.submitted_at).toLocaleString() : new Date().toLocaleString())}</w:t></w:r>
+    </w:p>
+
+    ${heading('Section 1: Customer Information')}
+    ${table([
+      row('Company name', data.company),
+      row('Contact person', data.contact_person),
+      row('Address', data.address),
+      row('Telephone', data.telephone),
+      row('Email', data.email),
+      row('Person in charge', data.person_in_charge),
+      row('Project number', data.project_number),
+    ].join(''))}
+
+    ${heading('Section 2: Packaging Format & Product')}
+    ${table([row('Packaging format', fmtName), row('Product type', ptName)].join(''))}
+
+    ${dieTableRows ? heading('Section 3: Die-Line Specifications') + table(dieTableRows) : ''}
+    ${featTableRows ? heading(featSectionTitle) + table(featTableRows) : ''}
+    ${prodSpecTableRows ? heading('Section 4: Product-Specific Requirements') + table(prodSpecTableRows) : ''}
+
+    ${heading('Section 5: Production Information')}
+    ${table(prodInfoRows.join(''))}
+
+    ${heading('Section 6: Testing Requirements')}
+    ${table(testRows)}
+
+    ${data.additional_notes ? heading('Section 7: Additional Notes') + table(row('Notes', data.additional_notes)) : ''}
+
+    <w:p><w:pPr><w:spacing w:before="200"/><w:jc w:val="center"/>
+      <w:pBdr><w:top w:val="single" w:sz="6" w:color="C9A227"/></w:pBdr>
+    </w:pPr>
+      <w:r><w:rPr><w:i/><w:color w:val="718096"/><w:sz w:val="16"/></w:rPr>
+        <w:t>Logos Packaging Holdings Limited — www.logospack.com.hk — Confidential</w:t>
+      </w:r>
+    </w:p>
+    <w:sectPr>
+      <w:pgMar w:top="900" w:right="900" w:bottom="900" w:left="900" w:header="708" w:footer="708" w:gutter="0"/>
+    </w:sectPr>`;
+
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:wpc="http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"
+  xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+  xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"
+  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>${body}</w:body>
+</w:document>`;
+
+  const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>`;
+
+  const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:docDefaults>
+    <w:rPrDefault><w:rPr>
+      <w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/>
+      <w:sz w:val="20"/><w:szCs w:val="20"/>
+      <w:lang w:val="en-GB"/>
+    </w:rPr></w:rPrDefault>
+  </w:docDefaults>
+</w:styles>`;
+
+  const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+  <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+</Types>`;
+
+  const appRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`;
+
+  // ── zip and download ──────────────────────────────────────
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', contentTypesXml);
+  zip.file('_rels/.rels', appRelsXml);
+  zip.file('word/document.xml', documentXml);
+  zip.file('word/styles.xml', stylesXml);
+  zip.file('word/_rels/document.xml.rels', relsXml);
+
+  const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `Logos_Requirements_${(data.company || 'Client').replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.docx`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast('Word document downloaded!', false);
 }
 
 function _buildPDFDoc(data) {
